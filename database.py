@@ -13,7 +13,8 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 # تحسين رابط الاتصال لضمان استقرار SSL وتجنب الإغلاق المفاجئ
 def get_optimized_url(url):
     if not url:
-        return url
+        # Fallback to local if no URL provided (for development)
+        return "postgresql://postgres@localhost/postgres"
     
     # التأكد من وجود sslmode=require
     # في Render، يفضل استخدام sslmode=require مع gssencmode=disable
