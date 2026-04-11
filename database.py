@@ -24,6 +24,10 @@ def get_optimized_url(url):
     if "gssencmode=" not in url:
         params.append("gssencmode=disable")
         
+    # إضافة connect_timeout لضمان عدم التعليق
+    if "connect_timeout=" not in url:
+        params.append("connect_timeout=10")
+        
     if params:
         separator = "&" if "?" in url else "?"
         url += separator + "&".join(params)
@@ -41,6 +45,7 @@ postgreSQL_pool = ConnectionPool(
     reconnect_timeout=5.0,
     kwargs={
         "connect_timeout": 10,
+        "tcp_user_timeout": 10000, # 10 seconds
     }
 )
 
