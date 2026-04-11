@@ -13,37 +13,32 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 # تحسين رابط الاتصال لضمان استقرار SSL وتجنب الإغلاق المفاجئ
 def get_optimized_url(url):
     if not url:
-        # Fallback to local if no URL provided (for development)
         return "postgresql://postgres@localhost/postgres"
     
-    # التأكد من وجود sslmode=require
-    # في Render، يفضل استخدام sslmode=require مع gssencmode=disable
-    params = []
-    if "sslmode=" not in url:
-        params.append("sslmode=require")
+    # تنظيف الرابط من أي بارامترات SSL قديمة لتجنب التكرار
+    base_url = url.split('?')[0]
     
-    if "gssencmode=" not in url:
-        params.append("gssencmode=disable")
-        
-    if params:
-        separator = "&" if "?" in url else "?"
-        url += separator + "&".join(params)
-    return url
+    # استخدام sslmode=no-verify أو require حسب الحاجة، ولكن Render غالباً يحتاج require
+    # سنضيف البارامترات الأساسية لضمان استقرار الاتصال بـ SSL
+    optimized_url = f"{base_url}?sslmode=require&gssencmode=disable"
+    
+    return optimized_url
 
 OPTIMIZED_URL = get_optimized_url(DATABASE_URL)
 
 # إنشاء تجمع اتصالات (Connection Pool) مع إعدادات أكثر استقراراً
 # قمنا بتقليل min_size إلى 0 للسماح للتجمع بالبدء حتى لو فشل الاتصال الأولي
+# قمنا بتقليل min_size إلى 0 وإضافة إعدادات SSL في kwargs
 postgreSQL_pool = ConnectionPool(
     OPTIMIZED_URL,
     min_size=0,
-    max_size=5,
+    max_size=10,
     open=False,
     reconnect_failed=None,
-    reconnect_timeout=5.0,
+    reconnect_timeout=2.0,
     kwargs={
-        "connect_timeout": 15,
-        "tcp_user_timeout": 15000,
+        "connect_timeout": 10,
+        "sslmode": "require",
     }
 )
 
@@ -137,10 +132,12 @@ def add_project(name, description=""):
     except Exception as e:
         logger.error(f"Error adding project with pool: {e}")
         # محاولة إضافية بدون استخدام التجمع في حالة فشله
+        time.sleep(1) # انتظار بسيط قبل المحاولة المباشرة
         try:
             # التأكد من أن الرابط محسن قبل استخدامه مباشرة
             direct_url = get_optimized_url(os.getenv('DATABASE_URL'))
-            with psycopg.connect(direct_url, connect_timeout=10) as conn:
+            # إضافة sslmode=require بشكل صريح في الاتصال المباشر أيضاً
+            with psycopg.connect(direct_url, connect_timeout=15, sslmode="require") as conn:
                 with conn.cursor() as cursor:
                     # التحقق من وجود المشروع مسبقاً في المحاولة الثانية أيضاً
                     cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
