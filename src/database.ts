@@ -15,7 +15,6 @@ export const pool = new Pool({
 export async function initDatabase() {
   const client = await pool.connect();
   try {
-    // Step 1: Create tables (api_token nullable initially for safe migration)
     await client.query(`
       CREATE TABLE IF NOT EXISTS projects (
         id SERIAL PRIMARY KEY,
@@ -28,6 +27,8 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS knowledge (
         id SERIAL PRIMARY KEY,
         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        label TEXT,
+        summary TEXT,
         content TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT NOW() NOT NULL
       );
@@ -49,7 +50,7 @@ export async function initDatabase() {
       );
     `);
 
-    // Step 2: Handle old Python schema (column was named 'token')
+    // Migration: rename 'token' → 'api_token' if old schema
     const hasToken = await client.query(`
       SELECT 1 FROM information_schema.columns
       WHERE table_name = 'projects' AND column_name = 'token'
@@ -59,35 +60,53 @@ export async function initDatabase() {
       await client.query(`ALTER TABLE projects RENAME COLUMN token TO api_token`);
     }
 
-    // Step 3: Add api_token column if still missing
+    // Migration: add api_token column if missing
     const hasApiToken = await client.query(`
       SELECT 1 FROM information_schema.columns
       WHERE table_name = 'projects' AND column_name = 'api_token'
     `);
     if (hasApiToken.rows.length === 0) {
-      console.log("Migration: adding 'api_token' column");
       await client.query(`ALTER TABLE projects ADD COLUMN api_token TEXT`);
     }
 
-    // Step 4: Fill NULL api_tokens for any existing rows (using Node.js crypto, not pg extension)
+    // Migration: fill NULL api_tokens
     const nullProjects = await client.query(`SELECT id FROM projects WHERE api_token IS NULL`);
     for (const row of nullProjects.rows) {
       const token = randomBytes(32).toString("hex");
       await client.query(`UPDATE projects SET api_token = $1 WHERE id = $2`, [token, row.id]);
-      console.log(`Migration: generated api_token for project id=${row.id}`);
     }
 
-    // Step 5: Add UNIQUE constraint if not present
+    // Migration: add UNIQUE constraint on api_token
     const hasUnique = await client.query(`
       SELECT 1 FROM information_schema.table_constraints tc
-      JOIN information_schema.constraint_column_usage ccu 
+      JOIN information_schema.constraint_column_usage ccu
         ON tc.constraint_name = ccu.constraint_name
-      WHERE tc.table_name = 'projects' 
+      WHERE tc.table_name = 'projects'
         AND tc.constraint_type = 'UNIQUE'
         AND ccu.column_name = 'api_token'
     `);
     if (hasUnique.rows.length === 0) {
       await client.query(`ALTER TABLE projects ADD CONSTRAINT projects_api_token_unique UNIQUE (api_token)`);
+    }
+
+    // Migration: add label column to knowledge if missing
+    const hasLabel = await client.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'knowledge' AND column_name = 'label'
+    `);
+    if (hasLabel.rows.length === 0) {
+      console.log("Migration: adding 'label' and 'summary' columns to knowledge");
+      await client.query(`ALTER TABLE knowledge ADD COLUMN label TEXT`);
+      await client.query(`ALTER TABLE knowledge ADD COLUMN summary TEXT`);
+    }
+
+    // Migration: add summary column if label exists but summary doesn't
+    const hasSummary = await client.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'knowledge' AND column_name = 'summary'
+    `);
+    if (hasSummary.rows.length === 0) {
+      await client.query(`ALTER TABLE knowledge ADD COLUMN summary TEXT`);
     }
 
     console.log("✅ Database tables ready");
@@ -129,20 +148,35 @@ export async function getProjectByToken(token: string): Promise<Project | undefi
   return result.rows[0] as Project | undefined;
 }
 
-export async function addKnowledge(projectId: number, content: string) {
+export async function addKnowledge(
+  projectId: number,
+  content: string,
+  label?: string,
+  summary?: string
+) {
   const result = await pool.query(
-    "INSERT INTO knowledge (project_id, content) VALUES ($1, $2) RETURNING *",
-    [projectId, content]
+    "INSERT INTO knowledge (project_id, content, label, summary) VALUES ($1, $2, $3, $4) RETURNING *",
+    [projectId, content, label ?? null, summary ?? null]
   );
-  return result.rows[0];
+  return result.rows[0] as KnowledgeItem;
 }
 
-export async function getKnowledge(projectId: number) {
+export async function getKnowledge(projectId: number): Promise<KnowledgeItem[]> {
   const result = await pool.query(
-    "SELECT id, content, created_at FROM knowledge WHERE project_id = $1 ORDER BY created_at ASC",
+    "SELECT id, label, summary, content, created_at FROM knowledge WHERE project_id = $1 ORDER BY created_at ASC",
     [projectId]
   );
-  return result.rows as { id: number; content: string; created_at: Date }[];
+  return result.rows as KnowledgeItem[];
+}
+
+export async function getKnowledgeByLabel(projectId: number, label: string): Promise<KnowledgeItem | undefined> {
+  const result = await pool.query(
+    `SELECT id, label, summary, content, created_at FROM knowledge
+     WHERE project_id = $1 AND LOWER(label) = LOWER($2)
+     ORDER BY created_at DESC LIMIT 1`,
+    [projectId, label]
+  );
+  return result.rows[0] as KnowledgeItem | undefined;
 }
 
 export async function getUserSession(telegramUserId: number) {
@@ -196,5 +230,13 @@ export interface Project {
   name: string;
   description: string | null;
   api_token: string;
+  created_at: Date;
+}
+
+export interface KnowledgeItem {
+  id: number;
+  label: string | null;
+  summary: string | null;
+  content: string;
   created_at: Date;
 }
