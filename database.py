@@ -1,128 +1,91 @@
-import psycopg
+import psycopg2
 import os
 import time
 import logging
-from psycopg_pool import ConnectionPool
 
-# إعداد السجلات لمراقبة أخطاء قاعدة البيانات
+# إعداد السجلات
 logger = logging.getLogger(__name__)
 
-# جلب رابط الاتصال بقاعدة البيانات من المتغيرات البيئية
+# جلب رابط الاتصال بقاعدة البيانات
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-# تحسين رابط الاتصال لضمان استقرار SSL وتجنب الإغلاق المفاجئ
-def get_optimized_url(url):
-    if not url:
-        return "postgresql://postgres@localhost/postgres"
-    
-    # تنظيف الرابط من أي بارامترات SSL قديمة لتجنب التكرار
-    base_url = url.split('?')[0]
-    
-    # استخدام sslmode=no-verify أو require حسب الحاجة، ولكن Render غالباً يحتاج require
-    # سنضيف البارامترات الأساسية لضمان استقرار الاتصال بـ SSL
-    optimized_url = f"{base_url}?sslmode=require&gssencmode=disable"
-    
-    return optimized_url
-
-OPTIMIZED_URL = get_optimized_url(DATABASE_URL)
-
-# إنشاء تجمع اتصالات (Connection Pool) مع إعدادات أكثر استقراراً
-# قمنا بتقليل min_size إلى 0 للسماح للتجمع بالبدء حتى لو فشل الاتصال الأولي
-# قمنا بتقليل min_size إلى 0 وإضافة إعدادات SSL في kwargs
-postgreSQL_pool = ConnectionPool(
-    OPTIMIZED_URL,
-    min_size=0,
-    max_size=10,
-    open=False,
-    reconnect_failed=None,
-    reconnect_timeout=2.0,
-    kwargs={
-        "connect_timeout": 10,
-        "sslmode": "require",
-    }
-)
-
 def get_connection():
-    """الحصول على اتصال من التجمع مع التأكد من فتحه"""
-    try:
-        postgreSQL_pool.open()
-    except Exception:
-        pass
+    """الحصول على اتصال مباشر بقاعدة البيانات مع دعم SSL شامل"""
+    if not DATABASE_URL:
+        # Fallback for local development
+        return psycopg2.connect("postgresql://postgres@localhost/postgres")
     
-    # محاولة الحصول على اتصال مع إعادة المحاولة في حالة الفشل اللحظي
+    # محاولة الاتصال مع إعادة المحاولة في حالة الفشل
     max_retries = 3
     for i in range(max_retries):
         try:
-            return postgreSQL_pool.connection()
+            # استخدام sslmode=require بشكل صريح لضمان التوافق مع Render/Google Cloud
+            # psycopg2 يتعامل مع SSL بشكل أكثر استقراراً في البيئات السحابية
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
+            return conn
         except Exception as e:
-            if i == max_retries - 1:
+            logger.error(f"Attempt {i+1} to connect failed: {e}")
+            if i < max_retries - 1:
+                time.sleep(2)
+            else:
                 raise e
-            time.sleep(2)
 
 def init_db():
-    """تهيئة جداول قاعدة البيانات مع آلية إعادة المحاولة"""
+    """تهيئة جداول قاعدة البيانات"""
     print("جاري تهيئة قاعدة البيانات...")
-    max_retries = 5
-    for i in range(max_retries):
-        try:
-            with get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # جدول المشاريع
-                    cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS projects (
-                        id SERIAL PRIMARY KEY,
-                        name TEXT UNIQUE NOT NULL,
-                        description TEXT
-                    )
-                    ''')
-                    
-                    # جدول المعرفة
-                    cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS knowledge (
-                        id SERIAL PRIMARY KEY,
-                        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                        content TEXT NOT NULL
-                    )
-                    ''')
-                    
-                    # جدول تاريخ المحادثات
-                    cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS chat_history (
-                        id SERIAL PRIMARY KEY,
-                        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                        role TEXT,
-                        content TEXT,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                    ''')
-                    
-                    # جدول حالة المستخدم
-                    cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS user_state (
-                        user_id BIGINT PRIMARY KEY,
-                        current_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
-                    )
-                    ''')
-                    
-                    conn.commit()
-                    print("تمت تهيئة قاعدة البيانات بنجاح")
-                    return
-        except Exception as e:
-            print(f"محاولة تهيئة قاعدة البيانات {i+1} فشلت: {e}")
-            if i < max_retries - 1:
-                time.sleep(5)
-            else:
-                print("فشلت جميع محاولات تهيئة قاعدة البيانات.")
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # جدول المشاريع
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS projects (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    description TEXT
+                )
+                ''')
+                
+                # جدول المعرفة
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS knowledge (
+                    id SERIAL PRIMARY KEY,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL
+                )
+                ''')
+                
+                # جدول تاريخ المحادثات
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id SERIAL PRIMARY KEY,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                    role TEXT,
+                    content TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # جدول حالة المستخدم
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_state (
+                    user_id BIGINT PRIMARY KEY,
+                    current_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
+                )
+                ''')
+                
+                conn.commit()
+                print("تمت تهيئة قاعدة البيانات بنجاح")
+    except Exception as e:
+        print(f"فشل تهيئة قاعدة البيانات: {e}")
 
 def add_project(name, description=""):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # التحقق من وجود المشروع مسبقاً
+                # التحقق من وجود المشروع مسبقاً (Case-insensitive)
                 cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
                 existing = cursor.fetchone()
                 if existing:
-                    logger.info(f"Project '{name}' already exists with ID {existing[0]}")
                     return None
                 
                 cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
@@ -130,36 +93,15 @@ def add_project(name, description=""):
                 conn.commit()
                 return project_id
     except Exception as e:
-        logger.error(f"Error adding project with pool: {e}")
-        # محاولة إضافية بدون استخدام التجمع في حالة فشله
-        time.sleep(1) # انتظار بسيط قبل المحاولة المباشرة
-        try:
-            # التأكد من أن الرابط محسن قبل استخدامه مباشرة
-            direct_url = get_optimized_url(os.getenv('DATABASE_URL'))
-            # إضافة sslmode=require بشكل صريح في الاتصال المباشر أيضاً
-            with psycopg.connect(direct_url, connect_timeout=15, sslmode="require") as conn:
-                with conn.cursor() as cursor:
-                    # التحقق من وجود المشروع مسبقاً في المحاولة الثانية أيضاً
-                    cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
-                    existing = cursor.fetchone()
-                    if existing:
-                        return None
-                        
-                    cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
-                    project_id = cursor.fetchone()[0]
-                    conn.commit()
-                    return project_id
-        except Exception as e2:
-            logger.error(f"Fallback direct connection failed: {e2}")
-            return None
+        logger.error(f"Error adding project: {e}")
+        return None
 
 def get_projects():
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute('SELECT id, name FROM projects ORDER BY id DESC')
-                projects = cursor.fetchall()
-                return projects
+                return cursor.fetchall()
     except Exception as e:
         logger.error(f"Error getting projects: {e}")
         return []
@@ -178,7 +120,12 @@ def set_user_project(user_id, project_id):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute('INSERT INTO user_state (user_id, current_project_id) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET current_project_id = EXCLUDED.current_project_id', (user_id, project_id))
+                cursor.execute('''
+                    INSERT INTO user_state (user_id, current_project_id) 
+                    VALUES (%s, %s) 
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET current_project_id = EXCLUDED.current_project_id
+                ''', (user_id, project_id))
                 conn.commit()
     except Exception as e:
         logger.error(f"Error setting user project: {e}")

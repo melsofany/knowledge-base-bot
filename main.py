@@ -199,11 +199,8 @@ if __name__ == '__main__':
     health_thread = threading.Thread(target=run_health_check, daemon=True)
     health_thread.start()
 
-    try:
-        init_db()
-    except Exception as e:
-        logging.error(f"Database initialization failed: {e}")
-        # We continue to allow the bot to start even if DB fails initially
+    # تهيئة قاعدة البيانات عند التشغيل
+    init_db()
         
     app = ApplicationBuilder().token(TOKEN).build()
     logging.info("Bot application built successfully.")
