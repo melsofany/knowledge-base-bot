@@ -1,4 +1,4 @@
-import psycopg2
+import psycopg
 import os
 import time
 import logging
@@ -10,23 +10,27 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv('DATABASE_URL')
 
 def get_connection():
-    """الحصول على اتصال مباشر بقاعدة البيانات مع دعم SSL شامل"""
+    """الحصول على اتصال مباشر وبسيط بقاعدة البيانات مع فرض SSL"""
     if not DATABASE_URL:
-        # Fallback for local development
-        return psycopg2.connect("postgresql://postgres@localhost/postgres")
+        return psycopg.connect("postgresql://postgres@localhost/postgres")
     
-    # محاولة الاتصال مع إعادة المحاولة في حالة الفشل
+    # تنظيف الرابط من أي بارامترات قديمة لضمان عدم التكرار
+    base_url = DATABASE_URL.split('?')[0]
+    
+    # الحل النهائي: استخدام sslmode=require مع gssencmode=disable لضمان استقرار SSL على Render
+    # psycopg3 يتعامل مع هذه البارامترات بشكل ممتاز
+    optimized_url = f"{base_url}?sslmode=require&gssencmode=disable"
+    
     max_retries = 3
     for i in range(max_retries):
         try:
-            # استخدام sslmode=require بشكل صريح لضمان التوافق مع Render/Google Cloud
-            # psycopg2 يتعامل مع SSL بشكل أكثر استقراراً في البيئات السحابية
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
+            # اتصال مباشر بدون Connection Pool لتجنب مشاكل الـ Timeout والـ SSL المعقدة
+            conn = psycopg.connect(optimized_url, connect_timeout=15)
             return conn
         except Exception as e:
             logger.error(f"Attempt {i+1} to connect failed: {e}")
             if i < max_retries - 1:
-                time.sleep(2)
+                time.sleep(3)
             else:
                 raise e
 
@@ -36,7 +40,6 @@ def init_db():
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # جدول المشاريع
                 cursor.execute('''
                 CREATE TABLE IF NOT EXISTS projects (
                     id SERIAL PRIMARY KEY,
@@ -44,8 +47,6 @@ def init_db():
                     description TEXT
                 )
                 ''')
-                
-                # جدول المعرفة
                 cursor.execute('''
                 CREATE TABLE IF NOT EXISTS knowledge (
                     id SERIAL PRIMARY KEY,
@@ -53,8 +54,6 @@ def init_db():
                     content TEXT NOT NULL
                 )
                 ''')
-                
-                # جدول تاريخ المحادثات
                 cursor.execute('''
                 CREATE TABLE IF NOT EXISTS chat_history (
                     id SERIAL PRIMARY KEY,
@@ -64,15 +63,12 @@ def init_db():
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 ''')
-                
-                # جدول حالة المستخدم
                 cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_state (
                     user_id BIGINT PRIMARY KEY,
                     current_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
                 )
                 ''')
-                
                 conn.commit()
                 print("تمت تهيئة قاعدة البيانات بنجاح")
     except Exception as e:
@@ -82,12 +78,10 @@ def add_project(name, description=""):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # التحقق من وجود المشروع مسبقاً (Case-insensitive)
                 cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
                 existing = cursor.fetchone()
                 if existing:
                     return None
-                
                 cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
                 project_id = cursor.fetchone()[0]
                 conn.commit()
