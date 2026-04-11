@@ -23,12 +23,46 @@ function mainKeyboard() {
   ]);
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 async function safeEdit(ctx: any, text: string, extra?: any) {
   try {
     await ctx.editMessageText(text, extra);
   } catch {
-    // If edit fails (old message, etc.), send a new message
+    try {
+      await ctx.reply(text, extra);
+    } catch (err2) {
+      console.error("safeEdit reply also failed:", err2);
+    }
+  }
+}
+
+async function sendLongMessage(ctx: any, text: string, extra?: any) {
+  const MAX_LENGTH = 4000;
+  if (text.length <= MAX_LENGTH) {
     await ctx.reply(text, extra);
+    return;
+  }
+  const chunks: string[] = [];
+  let current = text;
+  while (current.length > 0) {
+    if (current.length <= MAX_LENGTH) {
+      chunks.push(current);
+      break;
+    }
+    let splitAt = current.lastIndexOf("\n", MAX_LENGTH);
+    if (splitAt <= 0) splitAt = MAX_LENGTH;
+    chunks.push(current.substring(0, splitAt));
+    current = current.substring(splitAt).trimStart();
+  }
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    await ctx.reply(chunks[i], isLast ? extra : { parse_mode: "HTML" });
   }
 }
 
@@ -41,7 +75,6 @@ export function createBot() {
 
   const bot = new Telegraf(token);
 
-  // Global error handler
   bot.catch((err: unknown, ctx: any) => {
     console.error("Bot unhandled error:", err);
     ctx.reply("❌ حدث خطأ غير متوقع. أرسل /start للبدء من جديد.").catch(() => {});
@@ -103,12 +136,13 @@ export function createBot() {
         await setUserSession(userId, projectId);
         const project = await getProjectById(projectId);
         userStates.delete(userId);
+        const projectName = escapeHtml(project?.name ?? "");
         await safeEdit(ctx,
-          `✅ تم اختيار المشروع: *${project?.name}*\n\n` +
+          `✅ تم اختيار المشروع: <b>${projectName}</b>\n\n` +
           "• أرسل أي سؤال برمجي للمحادثة مع الـ AI\n" +
           "• أضف تعليمات لهذا المشروع من القائمة\n" +
           "• احصل على API Token لأي AI Agent",
-          { parse_mode: "Markdown", ...mainKeyboard() }
+          { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
       }
@@ -116,8 +150,8 @@ export function createBot() {
       if (data === "new_project") {
         userStates.set(userId, { action: "new_project" });
         await safeEdit(ctx,
-          "📝 أرسل *اسم المشروع الجديد* الآن:\n(مثلاً: Blockchain App أو ERP System)",
-          { parse_mode: "Markdown" }
+          "📝 أرسل <b>اسم المشروع الجديد</b> الآن:\n(مثلاً: Blockchain App أو ERP System)",
+          { parse_mode: "HTML" }
         );
         return;
       }
@@ -133,12 +167,13 @@ export function createBot() {
         }
         userStates.set(userId, { action: "add_knowledge" });
         const project = await getProjectById(session.active_project_id);
+        const projectName = escapeHtml(project?.name ?? "");
         await safeEdit(ctx,
-          `💡 أرسل التعليمات لمشروع *${project?.name}*:\n\n` +
+          `💡 أرسل التعليمات لمشروع <b>${projectName}</b>:\n\n` +
           "مثال: استخدم TypeScript فقط\n" +
           "مثال: قاعدة البيانات PostgreSQL مع Drizzle ORM\n" +
           "مثال: API يعمل على منفذ 3000",
-          { parse_mode: "Markdown" }
+          { parse_mode: "HTML" }
         );
         return;
       }
@@ -151,16 +186,22 @@ export function createBot() {
         }
         const project = await getProjectById(session.active_project_id);
         const knowledge = await getKnowledge(session.active_project_id);
+        const projectName = escapeHtml(project?.name ?? "");
+
         if (!knowledge.length) {
-          await safeEdit(ctx,
-            `📋 لا توجد تعليمات لمشروع *${project?.name}* بعد.`,
-            { parse_mode: "Markdown", ...mainKeyboard() }
+          await ctx.reply(
+            `📋 لا توجد تعليمات لمشروع <b>${projectName}</b> بعد.`,
+            { parse_mode: "HTML", ...mainKeyboard() }
           );
           return;
         }
-        let text = `📋 تعليمات مشروع *${project?.name}*:\n\n`;
-        knowledge.forEach((k, i) => { text += `${i + 1}. ${k.content}\n\n`; });
-        await safeEdit(ctx, text, { parse_mode: "Markdown", ...mainKeyboard() });
+
+        let text = `📋 تعليمات مشروع <b>${projectName}</b>:\n\n`;
+        knowledge.forEach((k, i) => {
+          text += `${i + 1}. ${escapeHtml(k.content)}\n\n`;
+        });
+
+        await sendLongMessage(ctx, text, { parse_mode: "HTML", ...mainKeyboard() });
         return;
       }
 
@@ -173,16 +214,17 @@ export function createBot() {
         const project = await getProjectById(session.active_project_id);
         if (!project) return;
         const base = process.env.API_BASE_URL ?? "https://knowledge-base-bot.onrender.com";
-        await safeEdit(ctx,
-          `🔑 *API Token لمشروع ${project.name}*\n\n` +
-          `Token:\n\`${project.api_token}\`\n\n` +
-          `📡 *نقاط الـ API:*\n\n` +
-          `• معلومات: \`GET ${base}/api/project/info\`\n` +
-          `• المعرفة: \`GET ${base}/api/project/knowledge\`\n` +
-          `• محادثة: \`POST ${base}/api/project/chat\`\n` +
-          `• التاريخ: \`GET ${base}/api/project/history\`\n\n` +
-          `*Header مطلوب:*\n\`Authorization: Bearer ${project.api_token}\``,
-          { parse_mode: "Markdown", ...mainKeyboard() }
+        const projectName = escapeHtml(project.name);
+        await ctx.reply(
+          `🔑 <b>API Token لمشروع ${projectName}</b>\n\n` +
+          `Token:\n<code>${escapeHtml(project.api_token)}</code>\n\n` +
+          `📡 <b>نقاط الـ API:</b>\n\n` +
+          `• معلومات: <code>GET ${base}/api/project/info</code>\n` +
+          `• المعرفة: <code>GET ${base}/api/project/knowledge</code>\n` +
+          `• محادثة: <code>POST ${base}/api/project/chat</code>\n` +
+          `• التاريخ: <code>GET ${base}/api/project/history</code>\n\n` +
+          `<b>Header مطلوب:</b>\n<code>Authorization: Bearer ${escapeHtml(project.api_token)}</code>`,
+          { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
       }
@@ -213,17 +255,18 @@ export function createBot() {
           const project = await createProject(name);
           await setUserSession(userId, project.id);
           userStates.delete(userId);
+          const projectName = escapeHtml(project.name);
           await ctx.reply(
-            `✅ تم إنشاء مشروع *${project.name}*!\n\n🔑 API Token:\n\`${project.api_token}\`\n\nأضف تعليمات أو ابدأ المحادثة:`,
-            { parse_mode: "Markdown", ...mainKeyboard() }
+            `✅ تم إنشاء مشروع <b>${projectName}</b>!\n\n🔑 API Token:\n<code>${escapeHtml(project.api_token)}</code>\n\nأضف تعليمات أو ابدأ المحادثة:`,
+            { parse_mode: "HTML", ...mainKeyboard() }
           );
         } catch (err: any) {
           userStates.delete(userId);
           if (err?.code === "23505") {
-            // Unique constraint violation
+            const safeName = escapeHtml(name);
             await ctx.reply(
-              `❌ اسم المشروع "*${name}*" موجود بالفعل.\n\nاختر المشروع من قائمة مشاريعي أو اختر اسماً مختلفاً:`,
-              { parse_mode: "Markdown", ...mainKeyboard() }
+              `❌ اسم المشروع "<b>${safeName}</b>" موجود بالفعل.\n\nاختر المشروع من قائمة مشاريعي أو اختر اسماً مختلفاً:`,
+              { parse_mode: "HTML", ...mainKeyboard() }
             );
           } else {
             await ctx.reply("❌ حدث خطأ أثناء إنشاء المشروع. حاول مرة أخرى.", mainKeyboard());
@@ -243,14 +286,14 @@ export function createBot() {
         await addKnowledge(session.active_project_id, text.trim());
         userStates.delete(userId);
         const project = await getProjectById(session.active_project_id);
+        const projectName = escapeHtml(project?.name ?? "");
         await ctx.reply(
-          `✅ تم حفظ التعليمات لمشروع *${project?.name}*!`,
-          { parse_mode: "Markdown", ...mainKeyboard() }
+          `✅ تم حفظ التعليمات لمشروع <b>${projectName}</b>!`,
+          { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
       }
 
-      // Regular chat — use AI with project context
       const session = await getUserSession(userId);
       if (!session?.active_project_id) {
         await ctx.reply("⚠️ لم تختر مشروعاً بعد. اختر مشروعاً للبدء في المحادثة:", mainKeyboard());
@@ -258,9 +301,10 @@ export function createBot() {
       }
 
       const project = await getProjectById(session.active_project_id);
+      const projectName = escapeHtml(project?.name ?? "");
       const typing = await ctx.reply(
-        `⏳ جاري التحليل للمشروع *${project?.name}*...`,
-        { parse_mode: "Markdown" }
+        `⏳ جاري التحليل للمشروع <b>${projectName}</b>...`,
+        { parse_mode: "HTML" }
       );
 
       try {
