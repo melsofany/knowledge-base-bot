@@ -1,4 +1,5 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from database import init_db, add_project, get_projects, set_user_project, get_user_project, add_knowledge, add_chat_history
@@ -7,7 +8,8 @@ from ai_engine import get_ai_response
 # إعداد السجلات
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-TOKEN = "8256652388:AAFQQeqZeP-1eBR3ibKKLhCLJPQjRaGB0ck"
+# جلب توكن البوت من المتغيرات البيئية
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -93,6 +95,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await wait_msg.edit_text(ai_response)
 
 if __name__ == '__main__':
+    if not TOKEN:
+        print("خطأ: لم يتم ضبط TELEGRAM_BOT_TOKEN في المتغيرات البيئية.")
+        exit(1)
+        
     init_db()
     app = ApplicationBuilder().token(TOKEN).build()
     

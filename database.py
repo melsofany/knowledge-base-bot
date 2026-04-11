@@ -1,10 +1,22 @@
 import sqlite3
+import os
+
+# تحديد مسار قاعدة البيانات من المتغيرات البيئية أو استخدام المسار الافتراضي
+# على Render، سنقوم بربط قرص دائم (Persistent Disk) بالمسار /var/lib/knowledge_bot
+DB_PATH = os.getenv('DATABASE_PATH', 'knowledge.db')
+
+def get_connection():
+    return sqlite3.connect(DB_PATH)
 
 def init_db():
-    conn = sqlite3.connect('knowledge.db')
+    # التأكد من وجود المجلد إذا كان المسار يحتوي على مجلدات
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir)
+        
+    conn = get_connection()
     cursor = conn.cursor()
     
-    # جدول المشاريع
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13,7 +25,6 @@ def init_db():
     )
     ''')
     
-    # جدول المعرفة (التعليمات والبيانات)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS knowledge (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,7 +34,6 @@ def init_db():
     )
     ''')
     
-    # جدول تاريخ المحادثات
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS chat_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +45,6 @@ def init_db():
     )
     ''')
     
-    # جدول حالة المستخدم (المشروع الحالي المختار)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS user_state (
         user_id INTEGER PRIMARY KEY,
@@ -48,7 +57,7 @@ def init_db():
     conn.close()
 
 def add_project(name, description=""):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('INSERT INTO projects (name, description) VALUES (?, ?)', (name, description))
@@ -60,7 +69,7 @@ def add_project(name, description=""):
         conn.close()
 
 def get_projects():
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT id, name FROM projects')
     projects = cursor.fetchall()
@@ -68,14 +77,14 @@ def get_projects():
     return projects
 
 def set_user_project(user_id, project_id):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT OR REPLACE INTO user_state (user_id, current_project_id) VALUES (?, ?)', (user_id, project_id))
     conn.commit()
     conn.close()
 
 def get_user_project(user_id):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT current_project_id FROM user_state WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
@@ -83,14 +92,14 @@ def get_user_project(user_id):
     return result[0] if result else None
 
 def add_knowledge(project_id, content):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT INTO knowledge (project_id, content) VALUES (?, ?)', (project_id, content))
     conn.commit()
     conn.close()
 
 def get_project_knowledge(project_id):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT content FROM knowledge WHERE project_id = ?', (project_id,))
     knowledge = cursor.fetchall()
@@ -98,14 +107,14 @@ def get_project_knowledge(project_id):
     return [k[0] for k in knowledge]
 
 def add_chat_history(project_id, role, content):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT INTO chat_history (project_id, role, content) VALUES (?, ?, ?)', (project_id, role, content))
     conn.commit()
     conn.close()
 
 def get_chat_history(project_id, limit=10):
-    conn = sqlite3.connect('knowledge.db')
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT role, content FROM chat_history WHERE project_id = ? ORDER BY timestamp DESC LIMIT ?', (project_id, limit))
     history = cursor.fetchall()
