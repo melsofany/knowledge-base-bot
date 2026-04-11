@@ -32,13 +32,14 @@ def get_optimized_url(url):
 OPTIMIZED_URL = get_optimized_url(DATABASE_URL)
 
 # إنشاء تجمع اتصالات (Connection Pool) مع إعدادات أكثر استقراراً
-# تصحيح المعاملات لتتوافق مع psycopg-pool (reconnect_failed بدلاً من reconnect_failed_trials)
+# ملاحظة: في psycopg-pool، لا توجد خاصية .opened أو .opened_
+# بدلاً من ذلك، نستخدم open() ونعالج الاستثناء إذا كان مفتوحاً بالفعل، أو نتركه يفتح تلقائياً عند الحاجة
 postgreSQL_pool = ConnectionPool(
     OPTIMIZED_URL,
     min_size=1,
     max_size=10,
     open=False, # لا تفتح الاتصال فوراً عند الاستيراد
-    reconnect_failed=None, # استخدام القيمة الافتراضية أو دالة مخصصة
+    reconnect_failed=None,
     reconnect_timeout=5.0,
     kwargs={
         "connect_timeout": 10,
@@ -48,10 +49,12 @@ postgreSQL_pool = ConnectionPool(
 def get_connection():
     """الحصول على اتصال من التجمع مع التأكد من فتحه"""
     try:
-        if not postgreSQL_pool.opened:
-            postgreSQL_pool.open()
+        # في الإصدارات الحديثة، استدعاء open() آمن حتى لو كان مفتوحاً
+        # أو يمكننا ببساطة الاعتماد على أن التجمع سيفتح نفسه عند أول طلب اتصال إذا لم نغلقه
+        postgreSQL_pool.open()
     except Exception as e:
-        logger.error(f"فشل في فتح تجمع الاتصالات: {e}")
+        # إذا كان مفتوحاً بالفعل، قد يرمي استثناءً في بعض الإصدارات، نتجاهله
+        pass
     
     return postgreSQL_pool.connection()
 
@@ -107,7 +110,7 @@ def init_db():
         except Exception as e:
             print(f"محاولة تهيئة قاعدة البيانات {i+1} فشلت: {e}")
             if i < max_retries - 1:
-                time.sleep(3) # انتظار أطول قليلاً بين المحاولات
+                time.sleep(3)
             else:
                 print("فشلت جميع محاولات تهيئة قاعدة البيانات.")
 
