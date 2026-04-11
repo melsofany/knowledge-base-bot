@@ -16,17 +16,13 @@ def get_optimized_url(url):
         return url
     
     # التأكد من وجود sslmode=require
+    # في Render، يفضل استخدام sslmode=require مع gssencmode=disable
     params = []
     if "sslmode=" not in url:
         params.append("sslmode=require")
     
-    # إضافة gssencmode=disable لتجنب مشاكل GSSAPI في بعض البيئات
     if "gssencmode=" not in url:
         params.append("gssencmode=disable")
-        
-    # إضافة connect_timeout لضمان عدم التعليق
-    if "connect_timeout=" not in url:
-        params.append("connect_timeout=10")
         
     if params:
         separator = "&" if "?" in url else "?"
@@ -36,16 +32,17 @@ def get_optimized_url(url):
 OPTIMIZED_URL = get_optimized_url(DATABASE_URL)
 
 # إنشاء تجمع اتصالات (Connection Pool) مع إعدادات أكثر استقراراً
+# قمنا بتقليل min_size إلى 0 للسماح للتجمع بالبدء حتى لو فشل الاتصال الأولي
 postgreSQL_pool = ConnectionPool(
     OPTIMIZED_URL,
-    min_size=1,
-    max_size=10,
-    open=False, # لا تفتح الاتصال فوراً عند الاستيراد
+    min_size=0,
+    max_size=5,
+    open=False,
     reconnect_failed=None,
     reconnect_timeout=5.0,
     kwargs={
-        "connect_timeout": 10,
-        "tcp_user_timeout": 10000, # 10 seconds
+        "connect_timeout": 15,
+        "tcp_user_timeout": 15000,
     }
 )
 
@@ -56,7 +53,15 @@ def get_connection():
     except Exception:
         pass
     
-    return postgreSQL_pool.connection()
+    # محاولة الحصول على اتصال مع إعادة المحاولة في حالة الفشل اللحظي
+    max_retries = 3
+    for i in range(max_retries):
+        try:
+            return postgreSQL_pool.connection()
+        except Exception as e:
+            if i == max_retries - 1:
+                raise e
+            time.sleep(2)
 
 def init_db():
     """تهيئة جداول قاعدة البيانات مع آلية إعادة المحاولة"""
@@ -109,7 +114,7 @@ def init_db():
         except Exception as e:
             print(f"محاولة تهيئة قاعدة البيانات {i+1} فشلت: {e}")
             if i < max_retries - 1:
-                time.sleep(3)
+                time.sleep(5)
             else:
                 print("فشلت جميع محاولات تهيئة قاعدة البيانات.")
 
@@ -117,7 +122,7 @@ def add_project(name, description=""):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # التحقق من وجود المشروع مسبقاً (تجاهل حالة الأحرف والمسافات)
+                # التحقق من وجود المشروع مسبقاً
                 cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
                 existing = cursor.fetchone()
                 if existing:
@@ -129,7 +134,17 @@ def add_project(name, description=""):
                 return project_id
     except Exception as e:
         logger.error(f"Error adding project: {e}")
-        return None
+        # محاولة إضافية بدون استخدام التجمع في حالة فشله
+        try:
+            with psycopg.connect(OPTIMIZED_URL) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
+                    project_id = cursor.fetchone()[0]
+                    conn.commit()
+                    return project_id
+        except Exception as e2:
+            logger.error(f"Fallback direct connection failed: {e2}")
+            return None
 
 def get_projects():
     try:
