@@ -13,21 +13,18 @@ def get_connection():
 
     base_url = DATABASE_URL.split('?')[0]
 
-    max_retries = 5
-    for i in range(max_retries):
+    ssl_modes = ['require', 'prefer', 'allow', 'disable']
+    last_error = None
+    for mode in ssl_modes:
         try:
-            conn = psycopg2.connect(
-                base_url,
-                sslmode='require',
-                connect_timeout=15
-            )
+            conn = psycopg2.connect(base_url + '?sslmode=' + mode, connect_timeout=15)
+            logger.info(f'Connected successfully with sslmode={mode}')
             return conn
         except Exception as e:
-            logger.error(f'Attempt {i+1} to connect failed: {e}')
-            if i < max_retries - 1:
-                time.sleep(3)
-            else:
-                raise e
+            logger.warning(f'sslmode={mode} failed: {e}')
+            last_error = e
+            time.sleep(1)
+    raise last_error
 
 def init_db():
     print('جاري تهيئة قاعدة البيانات...')
