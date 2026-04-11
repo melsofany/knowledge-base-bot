@@ -2,11 +2,12 @@ import { Router, Request, Response, NextFunction } from "express";
 import {
   getProjectByToken,
   getKnowledge,
+  getKnowledgeByLabel,
   addKnowledge,
   createProject,
   getProjects,
 } from "./database.js";
-import { getAiResponse } from "./ai.js";
+import { getAiResponse, analyzeAndNameKnowledge } from "./ai.js";
 import { pool } from "./database.js";
 
 const router = Router();
@@ -35,17 +36,61 @@ router.get("/info", async (req, res) => {
   res.json({ id: p.id, name: p.name, description: p.description });
 });
 
+// GET all knowledge — returns list with labels and summaries
 router.get("/knowledge", async (req, res) => {
   const p = (req as Request & { project: { id: number; name: string } }).project;
   const knowledge = await getKnowledge(p.id);
-  res.json({ project: p.name, knowledge, total: knowledge.length });
+  const items = knowledge.map((k) => ({
+    id: k.id,
+    label: k.label ?? null,
+    summary: k.summary ?? null,
+    content: k.content,
+    created_at: k.created_at,
+  }));
+  res.json({
+    project: p.name,
+    total: items.length,
+    labels: items.map((k) => k.label).filter(Boolean),
+    knowledge: items,
+  });
 });
 
+// GET knowledge by label name — for external agents
+// Usage: GET /api/project/knowledge/by-label/mev_arbitrage_strategy
+router.get("/knowledge/by-label/:label", async (req, res) => {
+  const p = (req as Request & { project: { id: number; name: string } }).project;
+  const { label } = req.params;
+  if (!label) { res.status(400).json({ error: "label is required" }); return; }
+  const item = await getKnowledgeByLabel(p.id, label);
+  if (!item) {
+    res.status(404).json({ error: `No knowledge found with label: ${label}` });
+    return;
+  }
+  res.json({
+    project: p.name,
+    label: item.label,
+    summary: item.summary,
+    content: item.content,
+    created_at: item.created_at,
+  });
+});
+
+// POST knowledge — auto-analyzes and names it if label not provided
 router.post("/knowledge", async (req, res) => {
   const p = (req as Request & { project: { id: number; name: string } }).project;
-  const { content } = req.body as { content?: string };
+  const { content, label, summary } = req.body as { content?: string; label?: string; summary?: string };
   if (!content?.trim()) { res.status(400).json({ error: "content is required" }); return; }
-  const item = await addKnowledge(p.id, content.trim());
+
+  let finalLabel = label?.trim();
+  let finalSummary = summary?.trim();
+
+  if (!finalLabel) {
+    const analyzed = await analyzeAndNameKnowledge(content.trim());
+    finalLabel = analyzed.label;
+    finalSummary = finalSummary ?? analyzed.summary;
+  }
+
+  const item = await addKnowledge(p.id, content.trim(), finalLabel, finalSummary);
   res.status(201).json({ success: true, knowledge: item });
 });
 
