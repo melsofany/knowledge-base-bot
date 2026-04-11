@@ -126,6 +126,7 @@ def add_project(name, description=""):
                 cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
                 existing = cursor.fetchone()
                 if existing:
+                    logger.info(f"Project '{name}' already exists with ID {existing[0]}")
                     return None
                 
                 cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
@@ -133,11 +134,19 @@ def add_project(name, description=""):
                 conn.commit()
                 return project_id
     except Exception as e:
-        logger.error(f"Error adding project: {e}")
+        logger.error(f"Error adding project with pool: {e}")
         # محاولة إضافية بدون استخدام التجمع في حالة فشله
         try:
-            with psycopg.connect(OPTIMIZED_URL) as conn:
+            # التأكد من أن الرابط محسن قبل استخدامه مباشرة
+            direct_url = get_optimized_url(os.getenv('DATABASE_URL'))
+            with psycopg.connect(direct_url, connect_timeout=10) as conn:
                 with conn.cursor() as cursor:
+                    # التحقق من وجود المشروع مسبقاً في المحاولة الثانية أيضاً
+                    cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
+                    existing = cursor.fetchone()
+                    if existing:
+                        return None
+                        
                     cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
                     project_id = cursor.fetchone()[0]
                     conn.commit()

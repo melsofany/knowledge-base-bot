@@ -12,6 +12,8 @@ from telegram.ext import (
 )
 from database import init_db, add_project, get_projects, set_user_project, get_user_project, add_knowledge, add_chat_history, get_project_by_name
 from ai_engine import get_ai_response
+import threading
+from health_check import run_health_check
 
 # إعداد السجلات
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -95,27 +97,34 @@ async def save_project_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # محاولة إضافة المشروع
     project_id = add_project(project_name)
     
-    if project_id:
-        set_user_project(update.effective_user.id, project_id)
-        await update.message.reply_text(
-            f"✅ تم إنشاء المشروع '{project_name}' بنجاح وتم اختياره حالياً.\n"
-            "يمكنك الآن البدء بإضافة التعليمات أو الدردشة مباشرة.",
-            reply_markup=get_main_keyboard()
-        )
-    else:
-        # إذا فشل الإضافة، قد يكون موجوداً بالفعل
-        existing_project = get_project_by_name(project_name)
-        if existing_project:
-            set_user_project(update.effective_user.id, existing_project[0])
+    try:
+        if project_id:
+            set_user_project(update.effective_user.id, project_id)
             await update.message.reply_text(
-                f"ℹ️ المشروع '{project_name}' موجود بالفعل. تم اختياره تلقائياً لتتمكن من العمل عليه.",
+                f"✅ تم إنشاء المشروع '{project_name}' بنجاح وتم اختياره حالياً.\n"
+                "يمكنك الآن البدء بإضافة التعليمات أو الدردشة مباشرة.",
                 reply_markup=get_main_keyboard()
             )
         else:
-            await update.message.reply_text(
-                f"❌ حدث خطأ أثناء محاولة إنشاء المشروع. حاول باسم آخر.",
-                reply_markup=get_main_keyboard()
-            )
+            # إذا فشل الإضافة، قد يكون موجوداً بالفعل
+            existing_project = get_project_by_name(project_name)
+            if existing_project:
+                set_user_project(update.effective_user.id, existing_project[0])
+                await update.message.reply_text(
+                    f"ℹ️ المشروع '{project_name}' موجود بالفعل. تم اختياره تلقائياً لتتمكن من العمل عليه.",
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ حدث خطأ في قاعدة البيانات أثناء محاولة إنشاء المشروع. يرجى التأكد من اتصال قاعدة البيانات والمحاولة مرة أخرى.",
+                    reply_markup=get_main_keyboard()
+                )
+    except Exception as e:
+        logging.error(f"Error in save_project_name: {e}")
+        await update.message.reply_text(
+            f"❌ حدث خطأ غير متوقع: {str(e)}",
+            reply_markup=get_main_keyboard()
+        )
     return CHOOSING
 
 async def add_knowledge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,6 +195,10 @@ if __name__ == '__main__':
         print("Error: TELEGRAM_BOT_TOKEN not found.")
         exit(1)
         
+    # بدء خادم فحص الصحة في خلفية البرنامج لإرضاء Render
+    health_thread = threading.Thread(target=run_health_check, daemon=True)
+    health_thread.start()
+
     init_db()
     app = ApplicationBuilder().token(TOKEN).build()
     
