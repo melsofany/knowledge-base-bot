@@ -32,8 +32,6 @@ def get_optimized_url(url):
 OPTIMIZED_URL = get_optimized_url(DATABASE_URL)
 
 # إنشاء تجمع اتصالات (Connection Pool) مع إعدادات أكثر استقراراً
-# ملاحظة: في psycopg-pool، لا توجد خاصية .opened أو .opened_
-# بدلاً من ذلك، نستخدم open() ونعالج الاستثناء إذا كان مفتوحاً بالفعل، أو نتركه يفتح تلقائياً عند الحاجة
 postgreSQL_pool = ConnectionPool(
     OPTIMIZED_URL,
     min_size=1,
@@ -49,11 +47,8 @@ postgreSQL_pool = ConnectionPool(
 def get_connection():
     """الحصول على اتصال من التجمع مع التأكد من فتحه"""
     try:
-        # في الإصدارات الحديثة، استدعاء open() آمن حتى لو كان مفتوحاً
-        # أو يمكننا ببساطة الاعتماد على أن التجمع سيفتح نفسه عند أول طلب اتصال إذا لم نغلقه
         postgreSQL_pool.open()
-    except Exception as e:
-        # إذا كان مفتوحاً بالفعل، قد يرمي استثناءً في بعض الإصدارات، نتجاهله
+    except Exception:
         pass
     
     return postgreSQL_pool.connection()
@@ -64,7 +59,6 @@ def init_db():
     max_retries = 5
     for i in range(max_retries):
         try:
-            # نستخدم context manager لضمان إغلاق الاتصال والكرسر
             with get_connection() as conn:
                 with conn.cursor() as cursor:
                     # جدول المشاريع
@@ -80,7 +74,7 @@ def init_db():
                     cursor.execute('''
                     CREATE TABLE IF NOT EXISTS knowledge (
                         id SERIAL PRIMARY KEY,
-                        project_id INTEGER REFERENCES projects(id),
+                        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
                         content TEXT NOT NULL
                     )
                     ''')
@@ -89,7 +83,7 @@ def init_db():
                     cursor.execute('''
                     CREATE TABLE IF NOT EXISTS chat_history (
                         id SERIAL PRIMARY KEY,
-                        project_id INTEGER REFERENCES projects(id),
+                        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
                         role TEXT,
                         content TEXT,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -100,7 +94,7 @@ def init_db():
                     cursor.execute('''
                     CREATE TABLE IF NOT EXISTS user_state (
                         user_id BIGINT PRIMARY KEY,
-                        current_project_id INTEGER REFERENCES projects(id)
+                        current_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
                     )
                     ''')
                     
@@ -118,6 +112,12 @@ def add_project(name, description=""):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
+                # التحقق من وجود المشروع مسبقاً (تجاهل حالة الأحرف والمسافات)
+                cursor.execute('SELECT id FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
+                existing = cursor.fetchone()
+                if existing:
+                    return None
+                
                 cursor.execute('INSERT INTO projects (name, description) VALUES (%s, %s) RETURNING id', (name, description))
                 project_id = cursor.fetchone()[0]
                 conn.commit()
@@ -130,12 +130,22 @@ def get_projects():
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute('SELECT id, name FROM projects')
+                cursor.execute('SELECT id, name FROM projects ORDER BY id DESC')
                 projects = cursor.fetchall()
                 return projects
     except Exception as e:
         logger.error(f"Error getting projects: {e}")
         return []
+
+def get_project_by_name(name):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT id, name FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))', (name,))
+                return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"Error getting project by name: {e}")
+        return None
 
 def set_user_project(user_id, project_id):
     try:

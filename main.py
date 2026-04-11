@@ -10,7 +10,7 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from database import init_db, add_project, get_projects, set_user_project, get_user_project, add_knowledge, add_chat_history
+from database import init_db, add_project, get_projects, set_user_project, get_user_project, add_knowledge, add_chat_history, get_project_by_name
 from ai_engine import get_ai_response
 
 # إعداد السجلات
@@ -90,7 +90,9 @@ async def new_project_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return TYPING_PROJECT_NAME
 
 async def save_project_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    project_name = update.message.text
+    project_name = update.message.text.strip()
+    
+    # محاولة إضافة المشروع
     project_id = add_project(project_name)
     
     if project_id:
@@ -101,10 +103,19 @@ async def save_project_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard()
         )
     else:
-        await update.message.reply_text(
-            f"❌ المشروع '{project_name}' موجود بالفعل. حاول باسم آخر أو اختره من القائمة.",
-            reply_markup=get_main_keyboard()
-        )
+        # إذا فشل الإضافة، قد يكون موجوداً بالفعل
+        existing_project = get_project_by_name(project_name)
+        if existing_project:
+            set_user_project(update.effective_user.id, existing_project[0])
+            await update.message.reply_text(
+                f"ℹ️ المشروع '{project_name}' موجود بالفعل. تم اختياره تلقائياً لتتمكن من العمل عليه.",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ حدث خطأ أثناء محاولة إنشاء المشروع. حاول باسم آخر.",
+                reply_markup=get_main_keyboard()
+            )
     return CHOOSING
 
 async def add_knowledge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,13 +123,19 @@ async def add_knowledge_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     project_id = get_user_project(user_id)
     
     if not project_id:
-        query = update.callback_query
-        await query.answer("يرجى اختيار مشروع أولاً", show_alert=True)
-        return await list_projects_handler(update, context)
+        if update.callback_query:
+            await update.callback_query.answer("يرجى اختيار مشروع أولاً", show_alert=True)
+            return await list_projects_handler(update, context)
+        else:
+            await update.message.reply_text("⚠️ يرجى اختيار مشروع أولاً من القائمة.")
+            return await list_projects_handler(update, context)
     
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("يرجى إرسال *التعليمات أو البيانات* التي تريد إضافتها لهذا المشروع:", parse_mode="Markdown")
+    text = "يرجى إرسال *التعليمات أو البيانات* التي تريد إضافتها لهذا المشروع:"
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, parse_mode="Markdown")
     return TYPING_KNOWLEDGE
 
 async def save_knowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,6 +143,10 @@ async def save_knowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project_id = get_user_project(user_id)
     content = update.message.text
     
+    if not project_id:
+        await update.message.reply_text("⚠️ حدث خطأ: لم يتم العثور على مشروع نشط. يرجى اختيار مشروع أولاً.")
+        return CHOOSING
+
     add_knowledge(project_id, content)
     await update.message.reply_text(
         "✅ تمت إضافة التعليمات بنجاح إلى قاعدة معرفة المشروع.\n"
