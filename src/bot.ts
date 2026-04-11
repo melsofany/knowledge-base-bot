@@ -8,7 +8,7 @@ import {
   getUserSession,
   setUserSession,
 } from "./database.js";
-import { getAiResponse } from "./ai.js";
+import { getAiResponse, analyzeAndNameKnowledge } from "./ai.js";
 
 type BotState = { action?: "new_project" | "add_knowledge" };
 const userStates = new Map<number, BotState>();
@@ -169,10 +169,9 @@ export function createBot() {
         const project = await getProjectById(session.active_project_id);
         const projectName = escapeHtml(project?.name ?? "");
         await safeEdit(ctx,
-          `💡 أرسل التعليمات لمشروع <b>${projectName}</b>:\n\n` +
-          "مثال: استخدم TypeScript فقط\n" +
-          "مثال: قاعدة البيانات PostgreSQL مع Drizzle ORM\n" +
-          "مثال: API يعمل على منفذ 3000",
+          `💡 أرسل التعليمات أو الاستراتيجية لمشروع <b>${projectName}</b>:\n\n` +
+          "سيقوم الذكاء الاصطناعي بتحليلها وإعطائها اسماً تلقائياً\n" +
+          "يمكن لأي وكيل برمجي استدعاؤها لاحقاً باسمها عبر API",
           { parse_mode: "HTML" }
         );
         return;
@@ -198,7 +197,9 @@ export function createBot() {
 
         let text = `📋 تعليمات مشروع <b>${projectName}</b>:\n\n`;
         knowledge.forEach((k, i) => {
-          text += `${i + 1}. ${escapeHtml(k.content)}\n\n`;
+          const label = k.label ? `🏷 <code>${escapeHtml(k.label)}</code>` : "🏷 بدون اسم";
+          const summary = k.summary ? `\n📌 ${escapeHtml(k.summary)}` : "";
+          text += `${i + 1}. ${label}${summary}\n\n`;
         });
 
         await sendLongMessage(ctx, text, { parse_mode: "HTML", ...mainKeyboard() });
@@ -220,10 +221,13 @@ export function createBot() {
           `Token:\n<code>${escapeHtml(project.api_token)}</code>\n\n` +
           `📡 <b>نقاط الـ API:</b>\n\n` +
           `• معلومات: <code>GET ${base}/api/project/info</code>\n` +
-          `• المعرفة: <code>GET ${base}/api/project/knowledge</code>\n` +
+          `• كل التعليمات: <code>GET ${base}/api/project/knowledge</code>\n` +
+          `• تعليمة باسمها: <code>GET ${base}/api/project/knowledge/by-label/LABEL_NAME</code>\n` +
           `• محادثة: <code>POST ${base}/api/project/chat</code>\n` +
           `• التاريخ: <code>GET ${base}/api/project/history</code>\n\n` +
-          `<b>Header مطلوب:</b>\n<code>Authorization: Bearer ${escapeHtml(project.api_token)}</code>`,
+          `<b>Header مطلوب:</b>\n<code>Authorization: Bearer ${escapeHtml(project.api_token)}</code>\n\n` +
+          `<b>مثال استدعاء استراتيجية:</b>\n` +
+          `<code>GET ${base}/api/project/knowledge/by-label/mev_arbitrage_strategy</code>`,
           { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
@@ -283,17 +287,47 @@ export function createBot() {
           await ctx.reply("⚠️ انتهت الجلسة. اختر مشروعاً:", mainKeyboard());
           return;
         }
-        await addKnowledge(session.active_project_id, text.trim());
+
         userStates.delete(userId);
+
+        // Show analyzing message
+        const analyzing = await ctx.reply(
+          "🧠 جاري تحليل التعليمات وإعطاؤها اسماً...",
+          { parse_mode: "HTML" }
+        );
+
+        let label: string;
+        let summary: string;
+        try {
+          const analyzed = await analyzeAndNameKnowledge(text.trim());
+          label = analyzed.label;
+          summary = analyzed.summary;
+        } catch {
+          label = "knowledge_" + Date.now();
+          summary = text.trim().substring(0, 150);
+        }
+
+        await addKnowledge(session.active_project_id, text.trim(), label, summary);
+
+        // Delete analyzing message
+        await ctx.telegram.deleteMessage(ctx.chat.id, analyzing.message_id).catch(() => {});
+
         const project = await getProjectById(session.active_project_id);
         const projectName = escapeHtml(project?.name ?? "");
+        const base = process.env.API_BASE_URL ?? "https://knowledge-base-bot.onrender.com";
+
         await ctx.reply(
-          `✅ تم حفظ التعليمات لمشروع <b>${projectName}</b>!`,
+          `✅ تم حفظ التعليمات لمشروع <b>${projectName}</b>!\n\n` +
+          `🏷 <b>الاسم التلقائي:</b> <code>${escapeHtml(label)}</code>\n\n` +
+          `📌 <b>الملخص:</b> ${escapeHtml(summary)}\n\n` +
+          `🔗 <b>استدعاؤها عبر API:</b>\n` +
+          `<code>GET ${base}/api/project/knowledge/by-label/${escapeHtml(label)}</code>`,
           { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
       }
 
+      // Regular chat — use AI with project context
       const session = await getUserSession(userId);
       if (!session?.active_project_id) {
         await ctx.reply("⚠️ لم تختر مشروعاً بعد. اختر مشروعاً للبدء في المحادثة:", mainKeyboard());
