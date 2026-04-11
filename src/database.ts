@@ -15,13 +15,13 @@ export const pool = new Pool({
 export async function initDatabase() {
   const client = await pool.connect();
   try {
-    // Create tables if they don't exist
+    // Step 1: Create tables (api_token nullable initially for safe migration)
     await client.query(`
       CREATE TABLE IF NOT EXISTS projects (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         description TEXT,
-        api_token TEXT UNIQUE,
+        api_token TEXT,
         created_at TIMESTAMP DEFAULT NOW() NOT NULL
       );
 
@@ -49,41 +49,51 @@ export async function initDatabase() {
       );
     `);
 
-    // Migration: handle old schema where column was named 'token' not 'api_token'
-    await client.query(`
-      DO $$
-      BEGIN
-        -- If 'api_token' column doesn't exist in projects table
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'projects' AND column_name = 'api_token'
-        ) THEN
-          -- Check if old 'token' column exists (Python legacy schema)
-          IF EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'projects' AND column_name = 'token'
-          ) THEN
-            ALTER TABLE projects RENAME COLUMN token TO api_token;
-          ELSE
-            ALTER TABLE projects ADD COLUMN api_token TEXT UNIQUE;
-          END IF;
-        END IF;
-
-        -- Fill any NULL api_token values with generated tokens
-        UPDATE projects
-        SET api_token = encode(gen_random_bytes(32), 'hex')
-        WHERE api_token IS NULL;
-
-        -- Ensure NOT NULL constraint exists
-        ALTER TABLE projects ALTER COLUMN api_token SET NOT NULL;
-
-      EXCEPTION WHEN OTHERS THEN
-        RAISE NOTICE 'Migration note: %', SQLERRM;
-      END
-      $$;
+    // Step 2: Handle old Python schema (column was named 'token')
+    const hasToken = await client.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'projects' AND column_name = 'token'
     `);
+    if (hasToken.rows.length > 0) {
+      console.log("Migration: renaming 'token' → 'api_token'");
+      await client.query(`ALTER TABLE projects RENAME COLUMN token TO api_token`);
+    }
+
+    // Step 3: Add api_token column if still missing
+    const hasApiToken = await client.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'projects' AND column_name = 'api_token'
+    `);
+    if (hasApiToken.rows.length === 0) {
+      console.log("Migration: adding 'api_token' column");
+      await client.query(`ALTER TABLE projects ADD COLUMN api_token TEXT`);
+    }
+
+    // Step 4: Fill NULL api_tokens for any existing rows (using Node.js crypto, not pg extension)
+    const nullProjects = await client.query(`SELECT id FROM projects WHERE api_token IS NULL`);
+    for (const row of nullProjects.rows) {
+      const token = randomBytes(32).toString("hex");
+      await client.query(`UPDATE projects SET api_token = $1 WHERE id = $2`, [token, row.id]);
+      console.log(`Migration: generated api_token for project id=${row.id}`);
+    }
+
+    // Step 5: Add UNIQUE constraint if not present
+    const hasUnique = await client.query(`
+      SELECT 1 FROM information_schema.table_constraints tc
+      JOIN information_schema.constraint_column_usage ccu 
+        ON tc.constraint_name = ccu.constraint_name
+      WHERE tc.table_name = 'projects' 
+        AND tc.constraint_type = 'UNIQUE'
+        AND ccu.column_name = 'api_token'
+    `);
+    if (hasUnique.rows.length === 0) {
+      await client.query(`ALTER TABLE projects ADD CONSTRAINT projects_api_token_unique UNIQUE (api_token)`);
+    }
 
     console.log("✅ Database tables ready");
+  } catch (err) {
+    console.error("❌ Database init error:", err);
+    throw err;
   } finally {
     client.release();
   }
