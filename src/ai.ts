@@ -6,6 +6,58 @@ const client = new OpenAI({
   baseURL: "https://api.deepseek.com",
 });
 
+export async function analyzeAndNameKnowledge(
+  content: string
+): Promise<{ label: string; summary: string }> {
+  if (!process.env.DEEPSEEK_API_KEY) {
+    return { label: "بدون_اسم", summary: content.substring(0, 100) };
+  }
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "deepseek-chat",
+      messages: [
+        {
+          role: "system",
+          content: `أنت محلل استراتيجيات برمجية متخصص. 
+مهمتك: تحليل النص المُدخَل وإعطائه:
+1. label: اسم قصير فريد باللغة الإنجليزية بدون مسافات (snake_case) يصف نوع الاستراتيجية أو التعليمة بدقة. مثال: mev_arbitrage_strategy أو blockchain_config أو api_rate_limit
+2. summary: ملخص قصير باللغة العربية لا يتجاوز 150 حرف يشرح ما تعنيه هذه التعليمة
+
+أجب فقط بـ JSON صحيح بهذا الشكل:
+{"label": "...", "summary": "..."}
+
+لا تضف أي نص آخر خارج الـ JSON.`,
+        },
+        {
+          role: "user",
+          content: content,
+        },
+      ],
+      stream: false,
+      temperature: 0.3,
+    });
+
+    const raw = response.choices[0]?.message?.content ?? "{}";
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(cleaned) as { label?: string; summary?: string };
+
+    const label = (parsed.label ?? "knowledge_item")
+      .replace(/\s+/g, "_")
+      .replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "")
+      .toLowerCase()
+      .substring(0, 60);
+
+    const summary = (parsed.summary ?? content.substring(0, 150)).substring(0, 200);
+
+    return { label, summary };
+  } catch (err) {
+    console.error("analyzeAndNameKnowledge error:", err);
+    const fallbackLabel = "knowledge_" + Date.now();
+    return { label: fallbackLabel, summary: content.substring(0, 150) };
+  }
+}
+
 export async function getAiResponse(
   projectId: number,
   userMessage: string,
@@ -21,7 +73,8 @@ export async function getAiResponse(
   if (knowledge.length > 0) {
     knowledgeContext = "إليك القواعد والتعليمات الصارمة لهذا المشروع:\n";
     knowledge.forEach((k, i) => {
-      knowledgeContext += `${i + 1}. ${k.content}\n`;
+      const labelPart = k.label ? `[${k.label}] ` : "";
+      knowledgeContext += `${i + 1}. ${labelPart}${k.content}\n`;
     });
   } else {
     knowledgeContext = "لا توجد تعليمات خاصة مخزنة لهذا المشروع بعد.";
