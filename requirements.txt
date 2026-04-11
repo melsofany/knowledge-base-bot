@@ -1,6 +1,5 @@
-python-telegram-bot==21.10
-  openai>=1.75.0
-  requests==2.32.3
-  python-dotenv==1.2.2
-  psycopg2-binary
-  
+python-telegram-bot==22.7
+openai==1.65.4
+requests==2.32.3
+python-dotenv==1.2.2
+psycopg2-binary
