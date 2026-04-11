@@ -32,17 +32,16 @@ def get_optimized_url(url):
 OPTIMIZED_URL = get_optimized_url(DATABASE_URL)
 
 # إنشاء تجمع اتصالات (Connection Pool) مع إعدادات أكثر استقراراً
-# نستخدم kwargs لتمرير إعدادات إضافية لـ psycopg
+# تصحيح المعاملات لتتوافق مع psycopg-pool (reconnect_failed بدلاً من reconnect_failed_trials)
 postgreSQL_pool = ConnectionPool(
     OPTIMIZED_URL,
     min_size=1,
     max_size=10,
     open=False, # لا تفتح الاتصال فوراً عند الاستيراد
-    reconnect_failed_trials=3,
+    reconnect_failed=None, # استخدام القيمة الافتراضية أو دالة مخصصة
     reconnect_timeout=5.0,
     kwargs={
         "connect_timeout": 10,
-        "tcp_user_timeout": 10000, # 10 ثوانٍ لمهلة TCP
     }
 )
 
