@@ -15,12 +15,13 @@ export const pool = new Pool({
 export async function initDatabase() {
   const client = await pool.connect();
   try {
+    // Create tables if they don't exist
     await client.query(`
       CREATE TABLE IF NOT EXISTS projects (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         description TEXT,
-        api_token TEXT NOT NULL UNIQUE,
+        api_token TEXT UNIQUE,
         created_at TIMESTAMP DEFAULT NOW() NOT NULL
       );
 
@@ -47,6 +48,41 @@ export async function initDatabase() {
         updated_at TIMESTAMP DEFAULT NOW() NOT NULL
       );
     `);
+
+    // Migration: handle old schema where column was named 'token' not 'api_token'
+    await client.query(`
+      DO $$
+      BEGIN
+        -- If 'api_token' column doesn't exist in projects table
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'projects' AND column_name = 'api_token'
+        ) THEN
+          -- Check if old 'token' column exists (Python legacy schema)
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'projects' AND column_name = 'token'
+          ) THEN
+            ALTER TABLE projects RENAME COLUMN token TO api_token;
+          ELSE
+            ALTER TABLE projects ADD COLUMN api_token TEXT UNIQUE;
+          END IF;
+        END IF;
+
+        -- Fill any NULL api_token values with generated tokens
+        UPDATE projects
+        SET api_token = encode(gen_random_bytes(32), 'hex')
+        WHERE api_token IS NULL;
+
+        -- Ensure NOT NULL constraint exists
+        ALTER TABLE projects ALTER COLUMN api_token SET NOT NULL;
+
+      EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Migration note: %', SQLERRM;
+      END
+      $$;
+    `);
+
     console.log("✅ Database tables ready");
   } finally {
     client.release();
