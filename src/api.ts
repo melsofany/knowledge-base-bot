@@ -58,7 +58,7 @@ router.get("/knowledge", async (req, res) => {
 // GET knowledge by label name — for external agents
 // Usage: GET /api/project/knowledge/by-label/mev_arbitrage_strategy
 router.get("/knowledge/by-label/:label", async (req, res) => {
-  const p = (req as Request & { project: { id: number; name: string } }).project;
+  const p = (req as unknown as Request & { project: { id: number; name: string } }).project;
   const { label } = req.params;
   if (!label) { res.status(400).json({ error: "label is required" }); return; }
   const item = await getKnowledgeByLabel(p.id, label);
