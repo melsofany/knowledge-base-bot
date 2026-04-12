@@ -30,22 +30,26 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+async function safeReply(ctx: any, text: string, extra?: any) {
+  try {
+    await ctx.reply(text, extra);
+  } catch (err) {
+    console.error("safeReply failed:", err);
+  }
+}
+
 async function safeEdit(ctx: any, text: string, extra?: any) {
   try {
     await ctx.editMessageText(text, extra);
   } catch {
-    try {
-      await ctx.reply(text, extra);
-    } catch (err2) {
-      console.error("safeEdit reply also failed:", err2);
-    }
+    await safeReply(ctx, text, extra);
   }
 }
 
 async function sendLongMessage(ctx: any, text: string, extra?: any) {
   const MAX_LENGTH = 4000;
   if (text.length <= MAX_LENGTH) {
-    await ctx.reply(text, extra);
+    await safeReply(ctx, text, extra);
     return;
   }
   const chunks: string[] = [];
@@ -62,7 +66,7 @@ async function sendLongMessage(ctx: any, text: string, extra?: any) {
   }
   for (let i = 0; i < chunks.length; i++) {
     const isLast = i === chunks.length - 1;
-    await ctx.reply(chunks[i], isLast ? extra : { parse_mode: "HTML" });
+    await safeReply(ctx, chunks[i], isLast ? extra : { parse_mode: "HTML" });
   }
 }
 
@@ -111,8 +115,18 @@ export function createBot() {
     }
 
     try {
+
       if (data === "list_projects") {
-        const projects = await getProjects();
+        let projects;
+        try {
+          projects = await getProjects();
+        } catch (dbErr) {
+          const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+          console.error("getProjects error:", dbErr);
+          await safeReply(ctx, `❌ خطأ قاعدة البيانات:\n<code>${escapeHtml(msg.substring(0, 200))}</code>`, { parse_mode: "HTML" });
+          return;
+        }
+
         if (!projects.length) {
           await safeEdit(ctx,
             "لا توجد مشاريع بعد. ابدأ بإنشاء مشروعك الأول!",
@@ -178,17 +192,36 @@ export function createBot() {
       }
 
       if (data === "list_knowledge") {
-        const session = await getUserSession(userId);
-        if (!session?.active_project_id) {
-          await ctx.reply("⚠️ لم تختر مشروعاً بعد.", mainKeyboard());
+        let session;
+        try {
+          session = await getUserSession(userId);
+        } catch (dbErr) {
+          const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+          console.error("getUserSession error:", dbErr);
+          await safeReply(ctx, `❌ خطأ:\n<code>${escapeHtml(msg.substring(0, 200))}</code>`, { parse_mode: "HTML" });
           return;
         }
-        const project = await getProjectById(session.active_project_id);
-        const knowledge = await getKnowledge(session.active_project_id);
+
+        if (!session?.active_project_id) {
+          await safeReply(ctx, "⚠️ لم تختر مشروعاً بعد.", mainKeyboard());
+          return;
+        }
+
+        let project, knowledge;
+        try {
+          project = await getProjectById(session.active_project_id);
+          knowledge = await getKnowledge(session.active_project_id);
+        } catch (dbErr) {
+          const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+          console.error("getKnowledge error:", dbErr);
+          await safeReply(ctx, `❌ خطأ:\n<code>${escapeHtml(msg.substring(0, 200))}</code>`, { parse_mode: "HTML" });
+          return;
+        }
+
         const projectName = escapeHtml(project?.name ?? "");
 
         if (!knowledge.length) {
-          await ctx.reply(
+          await safeReply(ctx,
             `📋 لا توجد تعليمات لمشروع <b>${projectName}</b> بعد.`,
             { parse_mode: "HTML", ...mainKeyboard() }
           );
@@ -209,25 +242,23 @@ export function createBot() {
       if (data === "get_token") {
         const session = await getUserSession(userId);
         if (!session?.active_project_id) {
-          await ctx.reply("⚠️ لم تختر مشروعاً بعد.", mainKeyboard());
+          await safeReply(ctx, "⚠️ لم تختر مشروعاً بعد.", mainKeyboard());
           return;
         }
         const project = await getProjectById(session.active_project_id);
         if (!project) return;
         const base = process.env.API_BASE_URL ?? "https://knowledge-base-bot.onrender.com";
         const projectName = escapeHtml(project.name);
-        await ctx.reply(
+        await safeReply(ctx,
           `🔑 <b>API Token لمشروع ${projectName}</b>\n\n` +
           `Token:\n<code>${escapeHtml(project.api_token)}</code>\n\n` +
           `📡 <b>نقاط الـ API:</b>\n\n` +
-          `• معلومات: <code>GET ${base}/api/project/info</code>\n` +
           `• كل التعليمات: <code>GET ${base}/api/project/knowledge</code>\n` +
           `• تعليمة باسمها: <code>GET ${base}/api/project/knowledge/by-label/LABEL_NAME</code>\n` +
           `• محادثة: <code>POST ${base}/api/project/chat</code>\n` +
           `• التاريخ: <code>GET ${base}/api/project/history</code>\n\n` +
           `<b>Header مطلوب:</b>\n<code>Authorization: Bearer ${escapeHtml(project.api_token)}</code>\n\n` +
-          `<b>مثال استدعاء استراتيجية:</b>\n` +
-          `<code>GET ${base}/api/project/knowledge/by-label/mev_arbitrage_strategy</code>`,
+          `<b>مثال:</b>\n<code>GET ${base}/api/project/knowledge/by-label/mev_arbitrage_strategy</code>`,
           { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
@@ -238,8 +269,9 @@ export function createBot() {
       }
 
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error("Callback error:", err);
-      await ctx.reply("❌ حدث خطأ. جرب مرة أخرى أو أرسل /menu").catch(() => {});
+      await safeReply(ctx, `❌ خطأ غير متوقع:\n<code>${escapeHtml(msg.substring(0, 200))}</code>\n\nأرسل /menu`, { parse_mode: "HTML" });
     }
   });
 
@@ -269,7 +301,7 @@ export function createBot() {
           if (err?.code === "23505") {
             const safeName = escapeHtml(name);
             await ctx.reply(
-              `❌ اسم المشروع "<b>${safeName}</b>" موجود بالفعل.\n\nاختر المشروع من قائمة مشاريعي أو اختر اسماً مختلفاً:`,
+              `❌ اسم المشروع "<b>${safeName}</b>" موجود بالفعل.\n\nاختر مشروعاً مختلفاً:`,
               { parse_mode: "HTML", ...mainKeyboard() }
             );
           } else {
@@ -290,11 +322,7 @@ export function createBot() {
 
         userStates.delete(userId);
 
-        // Show analyzing message
-        const analyzing = await ctx.reply(
-          "🧠 جاري تحليل التعليمات وإعطاؤها اسماً...",
-          { parse_mode: "HTML" }
-        );
+        const analyzing = await ctx.reply("🧠 جاري تحليل التعليمات وإعطاؤها اسماً...");
 
         let label: string;
         let summary: string;
@@ -308,8 +336,6 @@ export function createBot() {
         }
 
         await addKnowledge(session.active_project_id, text.trim(), label, summary);
-
-        // Delete analyzing message
         await ctx.telegram.deleteMessage(ctx.chat.id, analyzing.message_id).catch(() => {});
 
         const project = await getProjectById(session.active_project_id);
@@ -320,14 +346,12 @@ export function createBot() {
           `✅ تم حفظ التعليمات لمشروع <b>${projectName}</b>!\n\n` +
           `🏷 <b>الاسم التلقائي:</b> <code>${escapeHtml(label)}</code>\n\n` +
           `📌 <b>الملخص:</b> ${escapeHtml(summary)}\n\n` +
-          `🔗 <b>استدعاؤها عبر API:</b>\n` +
-          `<code>GET ${base}/api/project/knowledge/by-label/${escapeHtml(label)}</code>`,
+          `🔗 <b>استدعاء عبر API:</b>\n<code>GET ${base}/api/project/knowledge/by-label/${escapeHtml(label)}</code>`,
           { parse_mode: "HTML", ...mainKeyboard() }
         );
         return;
       }
 
-      // Regular chat — use AI with project context
       const session = await getUserSession(userId);
       if (!session?.active_project_id) {
         await ctx.reply("⚠️ لم تختر مشروعاً بعد. اختر مشروعاً للبدء في المحادثة:", mainKeyboard());
@@ -336,10 +360,7 @@ export function createBot() {
 
       const project = await getProjectById(session.active_project_id);
       const projectName = escapeHtml(project?.name ?? "");
-      const typing = await ctx.reply(
-        `⏳ جاري التحليل للمشروع <b>${projectName}</b>...`,
-        { parse_mode: "HTML" }
-      );
+      const typing = await ctx.reply(`⏳ جاري التحليل للمشروع <b>${projectName}</b>...`, { parse_mode: "HTML" });
 
       try {
         const reply = await getAiResponse(session.active_project_id, text, userId);
