@@ -101,6 +101,25 @@ export function createBot() {
     await ctx.reply("القائمة الرئيسية:", mainKeyboard());
   });
 
+  bot.command("dbtest", async (ctx) => {
+    try {
+      const projRes = await getProjects();
+      const { pool } = await import("./database.js");
+      const colRes = await pool.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name='knowledge' ORDER BY ordinal_position`
+      );
+      const cols = colRes.rows.map((r: any) => r.column_name).join(", ");
+      await ctx.reply(
+        `✅ قاعدة البيانات تعمل\n` +
+        `عدد المشاريع: ${projRes.length}\n` +
+        `أعمدة knowledge: ${cols}`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`❌ خطأ في قاعدة البيانات:\n${msg}`);
+    }
+  });
+
   bot.on("callback_query", async (ctx) => {
     const query = ctx.callbackQuery;
     if (!("data" in query)) return;
