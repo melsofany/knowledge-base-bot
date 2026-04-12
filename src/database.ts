@@ -15,6 +15,7 @@ export const pool = new Pool({
 export async function initDatabase() {
   const client = await pool.connect();
   try {
+    // Create tables if not exist (base schema without new columns)
     await client.query(`
       CREATE TABLE IF NOT EXISTS projects (
         id SERIAL PRIMARY KEY,
@@ -27,8 +28,6 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS knowledge (
         id SERIAL PRIMARY KEY,
         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        label TEXT,
-        summary TEXT,
         content TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT NOW() NOT NULL
       );
@@ -60,14 +59,8 @@ export async function initDatabase() {
       await client.query(`ALTER TABLE projects RENAME COLUMN token TO api_token`);
     }
 
-    // Migration: add api_token column if missing
-    const hasApiToken = await client.query(`
-      SELECT 1 FROM information_schema.columns
-      WHERE table_name = 'projects' AND column_name = 'api_token'
-    `);
-    if (hasApiToken.rows.length === 0) {
-      await client.query(`ALTER TABLE projects ADD COLUMN api_token TEXT`);
-    }
+    // Migration: add api_token if missing
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS api_token TEXT`);
 
     // Migration: fill NULL api_tokens
     const nullProjects = await client.query(`SELECT id FROM projects WHERE api_token IS NULL`);
@@ -89,25 +82,9 @@ export async function initDatabase() {
       await client.query(`ALTER TABLE projects ADD CONSTRAINT projects_api_token_unique UNIQUE (api_token)`);
     }
 
-    // Migration: add label column to knowledge if missing
-    const hasLabel = await client.query(`
-      SELECT 1 FROM information_schema.columns
-      WHERE table_name = 'knowledge' AND column_name = 'label'
-    `);
-    if (hasLabel.rows.length === 0) {
-      console.log("Migration: adding 'label' and 'summary' columns to knowledge");
-      await client.query(`ALTER TABLE knowledge ADD COLUMN label TEXT`);
-      await client.query(`ALTER TABLE knowledge ADD COLUMN summary TEXT`);
-    }
-
-    // Migration: add summary column if label exists but summary doesn't
-    const hasSummary = await client.query(`
-      SELECT 1 FROM information_schema.columns
-      WHERE table_name = 'knowledge' AND column_name = 'summary'
-    `);
-    if (hasSummary.rows.length === 0) {
-      await client.query(`ALTER TABLE knowledge ADD COLUMN summary TEXT`);
-    }
+    // Migration: add label and summary columns to knowledge (safe, IF NOT EXISTS)
+    await client.query(`ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS label TEXT`);
+    await client.query(`ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS summary TEXT`);
 
     console.log("✅ Database tables ready");
   } catch (err) {
@@ -162,11 +139,27 @@ export async function addKnowledge(
 }
 
 export async function getKnowledge(projectId: number): Promise<KnowledgeItem[]> {
-  const result = await pool.query(
-    "SELECT id, label, summary, content, created_at FROM knowledge WHERE project_id = $1 ORDER BY created_at ASC",
-    [projectId]
-  );
-  return result.rows as KnowledgeItem[];
+  // Try with label/summary columns first, fallback if they don't exist yet
+  try {
+    const result = await pool.query(
+      "SELECT id, label, summary, content, created_at FROM knowledge WHERE project_id = $1 ORDER BY created_at ASC",
+      [projectId]
+    );
+    return result.rows as KnowledgeItem[];
+  } catch {
+    // Fallback: columns might not exist in old DB
+    const result = await pool.query(
+      "SELECT id, content, created_at FROM knowledge WHERE project_id = $1 ORDER BY created_at ASC",
+      [projectId]
+    );
+    return (result.rows as { id: number; content: string; created_at: Date }[]).map((r) => ({
+      id: r.id,
+      label: null,
+      summary: null,
+      content: r.content,
+      created_at: r.created_at,
+    }));
+  }
 }
 
 export async function getKnowledgeByLabel(projectId: number, label: string): Promise<KnowledgeItem | undefined> {
