@@ -113,7 +113,6 @@ export function createBot() {
       
       // Update session
       await setUserSession(ctx.from.id, projectId);
-      console.log(`Session updated for user ${ctx.from.id} to project ${projectId}`);
       
       await ctx.editMessageText(
         `✅ تم اختيار المشروع: <b>${escapeHtml(project.name)}</b>\n${escapeHtml(project.description || "لا يوجد وصف")}\n\nماذا تريد أن تفعل؟`,
@@ -121,7 +120,6 @@ export function createBot() {
       );
     } catch (err) {
       console.error("Error in select_project action:", err);
-      await ctx.reply("❌ حدث خطأ أثناء اختيار المشروع.");
     }
   });
 
@@ -163,6 +161,7 @@ export function createBot() {
       }
     } catch (err) {
       console.error("Error in view_knowledge action:", err);
+      await ctx.reply("❌ حدث خطأ أثناء عرض المعرفة.");
     }
   });
 
@@ -175,15 +174,16 @@ export function createBot() {
       const project = await getProjectById(projectId);
       if (!project) return ctx.reply("المشروع غير موجود.");
       
-      await ctx.reply(
-        `🔑 مفتاح API لمشروع <b>${escapeHtml(project.name)}</b>:\n\n` +
+      // FIX: Escape <token> to avoid HTML parsing error
+      const text = `🔑 مفتاح API لمشروع <b>${escapeHtml(project.name)}</b>:\n\n` +
         `<code>${escapeHtml(project.api_token)}</code>\n\n` +
-        `استخدمه في الـ Header:\n<code>Authorization: Bearer <token></code>\n\n` +
-        `📖 التوثيق: ${API_BASE_URL}/api-docs`,
-        { parse_mode: "HTML" }
-      );
+        `استخدمه في الـ Header:\n<code>Authorization: Bearer &lt;token&gt;</code>\n\n` +
+        `📖 التوثيق: ${API_BASE_URL}/api-docs`;
+      
+      await ctx.reply(text, { parse_mode: "HTML" });
     } catch (err) {
       console.error("Error in show_token action:", err);
+      await ctx.reply("❌ حدث خطأ أثناء عرض المفتاح.");
     }
   });
 
