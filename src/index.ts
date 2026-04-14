@@ -1,56 +1,83 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import swaggerUi from "swagger-ui-express";
+import swaggerJsdoc from "swagger-jsdoc";
 import { initDatabase } from "./database.js";
-import { createBot } from "./bot.js";
 import projectRouter from "./api.js";
+import { createBot } from "./bot.js";
 
+const app = express();
 const PORT = parseInt(process.env.PORT ?? "3000");
 
-async function main() {
-  await initDatabase();
+app.use(cors());
+app.use(express.json());
 
-  const app = express();
-  app.use(cors());
-  app.use(express.json());
-
-  app.get("/", (_req, res) => {
-    res.json({
-      name: "Knowledge Base Bot API",
-      version: "1.0.0",
-      endpoints: {
-        health: "GET /api/healthz",
-        project_info: "GET /api/project/info",
-        knowledge: "GET /api/project/knowledge",
-        add_knowledge: "POST /api/project/knowledge",
-        chat: "POST /api/project/chat",
-        history: "GET /api/project/history",
-        admin_projects: "GET|POST /api/project/admin/projects",
+// Swagger configuration
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Knowledge Base Bot API",
+      version: "2.0.0",
+      description: "API for AI Knowledge Base Bot - Source of Truth for AI Agents",
+    },
+    servers: [
+      {
+        url: process.env.API_BASE_URL || `http://localhost:${PORT}`,
       },
-      auth: "Authorization: Bearer <project-api-token>",
+    ],
+  },
+  apis: ["./src/api.ts"],
+};
+
+const swaggerDocs = swaggerJsdoc(swaggerOptions);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+
+app.get("/", (req, res) => {
+  res.json({
+    name: "knowledge-base-bot",
+    version: "2.0.0",
+    status: "running",
+    docs: "/api-docs",
+    endpoints: {
+      health: "/api/healthz",
+      project: "/api/project",
+    },
+  });
+});
+
+app.get("/api/healthz", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+app.use("/api/project", projectRouter);
+
+async function start() {
+  try {
+    await initDatabase();
+    
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on http://localhost:${PORT}`);
+      console.log(`📖 API Documentation: http://localhost:${PORT}/api-docs`);
     });
-  });
 
-  app.get("/api/healthz", (_req, res) => {
-    res.json({ status: "ok" });
-  });
-
-  app.use("/api/project", projectRouter);
-
-  const bot = createBot();
-  if (bot) {
-    bot.launch().catch((err: unknown) => console.error("Bot error:", err));
-    process.once("SIGINT", () => bot.stop("SIGINT"));
-    process.once("SIGTERM", () => bot.stop("SIGTERM"));
-    console.log("✅ Telegram bot started");
+    const bot = createBot();
+    if (bot) {
+      bot.launch().catch((err: unknown) => console.error("Bot error:", err));
+      console.log("🤖 Telegram bot launched");
+      process.once("SIGINT", () => bot.stop("SIGINT"));
+      process.once("SIGTERM", () => bot.stop("SIGTERM"));
+    } else {
+      console.warn("⚠️ TELEGRAM_BOT_TOKEN not found, bot not started");
+    }
+  } catch (err) {
+    console.error("❌ Startup error:", err);
+    process.exit(1);
   }
-
-  app.listen(PORT, () => {
-    console.log(`✅ Server listening on port ${PORT}`);
-  });
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+start();
+
+process.once("SIGINT", () => process.exit(0));
+process.once("SIGTERM", () => process.exit(0));

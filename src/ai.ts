@@ -1,16 +1,41 @@
 import OpenAI from "openai";
-import { getKnowledge, getChatHistory, saveChatMessage } from "./database.js";
+import { getKnowledge, getChatHistory, saveChatMessage, searchKnowledge } from "./database.js";
 
 const client = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
   baseURL: "https://api.deepseek.com",
 });
 
+// For embeddings, we'll use OpenAI if available, or a fallback if needed
+const embeddingClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY,
+  baseURL: process.env.OPENAI_API_KEY ? "https://api.openai.com/v1" : "https://api.deepseek.com",
+});
+
+export async function getEmbedding(text: string): Promise<number[]> {
+  try {
+    const response = await embeddingClient.embeddings.create({
+      model: "text-embedding-3-small",
+      input: text,
+    });
+    return response.data[0].embedding;
+  } catch (err) {
+    console.error("getEmbedding error:", err);
+    // Fallback to a zero vector if embedding fails (not ideal, but prevents crash)
+    return new Array(1536).fill(0);
+  }
+}
+
 export async function analyzeAndNameKnowledge(
   content: string
-): Promise<{ label: string; summary: string }> {
+): Promise<{ label: string; summary: string; category: string; metadata: any }> {
   if (!process.env.DEEPSEEK_API_KEY) {
-    return { label: "بدون_اسم", summary: content.substring(0, 100) };
+    return { 
+      label: "knowledge_" + Date.now(), 
+      summary: content.substring(0, 100),
+      category: "general",
+      metadata: {}
+    };
   }
 
   try {
@@ -20,41 +45,41 @@ export async function analyzeAndNameKnowledge(
         {
           role: "system",
           content: `أنت محلل استراتيجيات برمجية متخصص. 
-مهمتك: تحليل النص المُدخَل وإعطائه:
-1. label: اسم قصير فريد باللغة الإنجليزية بدون مسافات (snake_case) يصف نوع الاستراتيجية أو التعليمة بدقة. مثال: mev_arbitrage_strategy أو blockchain_config أو api_rate_limit
-2. summary: ملخص قصير باللغة العربية لا يتجاوز 150 حرف يشرح ما تعنيه هذه التعليمة
+مهمتك: تحليل النص المُدخَل وتصنيفه كـ "مصدر حقيقة" لوكلاء الذكاء الاصطناعي.
+أجب بـ JSON يحتوي على:
+1. label: اسم فريد (snake_case) بالإنجليزية.
+2. summary: ملخص بالعربية (بحد أقصى 150 حرف).
+3. category: الفئة (architectural_pattern, coding_standard, approved_library, project_constraint, general).
+4. metadata: كائن JSON يحتوي على (language, importance: high/medium/low, tags).
 
-أجب فقط بـ JSON صحيح بهذا الشكل:
-{"label": "...", "summary": "..."}
-
-لا تضف أي نص آخر خارج الـ JSON.`,
+أجب فقط بـ JSON صحيح.`,
         },
         {
           role: "user",
           content: content,
         },
       ],
-      stream: false,
       temperature: 0.3,
     });
 
     const raw = response.choices[0]?.message?.content ?? "{}";
     const cleaned = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleaned) as { label?: string; summary?: string };
+    const parsed = JSON.parse(cleaned);
 
-    const label = (parsed.label ?? "knowledge_item")
-      .replace(/\s+/g, "_")
-      .replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "")
-      .toLowerCase()
-      .substring(0, 60);
-
-    const summary = (parsed.summary ?? content.substring(0, 150)).substring(0, 200);
-
-    return { label, summary };
+    return {
+      label: (parsed.label ?? "knowledge_item").toLowerCase().replace(/\s+/g, "_"),
+      summary: parsed.summary ?? content.substring(0, 150),
+      category: parsed.category ?? "general",
+      metadata: parsed.metadata ?? {},
+    };
   } catch (err) {
     console.error("analyzeAndNameKnowledge error:", err);
-    const fallbackLabel = "knowledge_" + Date.now();
-    return { label: fallbackLabel, summary: content.substring(0, 150) };
+    return { 
+      label: "knowledge_" + Date.now(), 
+      summary: content.substring(0, 150),
+      category: "general",
+      metadata: {}
+    };
   }
 }
 
@@ -67,33 +92,41 @@ export async function getAiResponse(
     return "❌ خطأ: DEEPSEEK_API_KEY غير مضبوط.";
   }
 
-  const knowledge = await getKnowledge(projectId);
-
-  let knowledgeContext: string;
-  if (knowledge.length > 0) {
-    knowledgeContext = "إليك القواعد والتعليمات الصارمة لهذا المشروع:\n";
-    knowledge.forEach((k, i) => {
-      const labelPart = k.label ? `[${k.label}] ` : "";
-      knowledgeContext += `${i + 1}. ${labelPart}${k.content}\n`;
+  // Use semantic search to find relevant context
+  const queryEmbedding = await getEmbedding(userMessage);
+  const relevantKnowledge = await searchKnowledge(projectId, queryEmbedding, 5);
+  
+  let knowledgeContext = "";
+  if (relevantKnowledge.length > 0) {
+    knowledgeContext = "إليك السياق ذو الصلة من قاعدة المعرفة (مصدر الحقيقة):\n";
+    relevantKnowledge.forEach((k, i) => {
+      knowledgeContext += `${i + 1}. [${k.category}] ${k.label}: ${k.content}\n`;
     });
   } else {
-    knowledgeContext = "لا توجد تعليمات خاصة مخزنة لهذا المشروع بعد.";
+    // Fallback to general knowledge if no semantic matches
+    const allKnowledge = await getKnowledge(projectId);
+    if (allKnowledge.length > 0) {
+      knowledgeContext = "إليك القواعد العامة للمشروع:\n";
+      allKnowledge.slice(0, 10).forEach((k, i) => {
+        knowledgeContext += `${i + 1}. ${k.content}\n`;
+      });
+    }
   }
 
   const history = await getChatHistory(projectId, telegramUserId, 10);
 
   const systemPrompt = `أنت خبير برمجي ومساعد ذكي متخصص. مهمتك مساعدة المستخدم في مشروعه البرمجي.
-لقد تم تزويدك بقاعدة معرفة خاصة بهذا المشروع تحديداً.
-يجب عليك الالتزام التام بالتعليمات الموجودة في قاعدة المعرفة.
-إذا تعارضت تعليمات المستخدم مع قاعدة المعرفة، نبهه لذلك ولكن اتبع قاعدة المعرفة إلا إذا طلب تغييرها.
+لقد تم تزويدك بقاعدة معرفة تعمل كـ "مصدر حقيقة" (Source of Truth).
+يجب عليك الالتزام التام بالتعليمات والأنماط المعمارية والمعايير المذكورة.
+هدفنا هو منع الهلوسة وضمان جودة الكود.
 
---- قاعدة معرفة المشروع ---
+--- سياق المشروع (مصدر الحقيقة) ---
 ${knowledgeContext}
 --------------------------`;
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
-    ...history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })),
+    ...history.map((h: any) => ({ role: h.role as "user" | "assistant", content: h.content })),
     { role: "user", content: userMessage },
   ];
 
@@ -101,7 +134,6 @@ ${knowledgeContext}
     const response = await client.chat.completions.create({
       model: "deepseek-chat",
       messages,
-      stream: false,
       temperature: 0.7,
     });
     const reply = response.choices[0]?.message?.content ?? "لا يوجد رد";
