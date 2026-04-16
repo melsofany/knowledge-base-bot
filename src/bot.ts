@@ -33,6 +33,7 @@ function getProjectMenu(projectId: number) {
 }
 
 function escapeHtml(text: string): string {
+  if (!text) return "";
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -150,18 +151,29 @@ export function createBot() {
       }
       
       let text = `📚 المعرفة المخزنة لمشروع <b>${escapeHtml(project?.name || "")}</b>:\n\n`;
-      knowledge.forEach((k, i) => {
-        text += `${i + 1}. 🔹 [${escapeHtml(k.category || "general")}] <code>${escapeHtml(k.label || "")}</code>\n📌 ${escapeHtml(k.summary || "")}\n\n`;
-      });
       
-      if (text.length > 4000) {
-        await ctx.reply(text.substring(0, 4000), { parse_mode: "HTML" });
-      } else {
+      for (let i = 0; i < knowledge.length; i++) {
+        const k = knowledge[i];
+        const category = k.category || "general";
+        const label = k.label || "بدون عنوان";
+        const summary = k.summary || "لا يوجد ملخص";
+        
+        const entry = `${i + 1}. 🔹 [${escapeHtml(category)}] <code>${escapeHtml(label)}</code>\n📌 ${escapeHtml(summary)}\n\n`;
+        
+        // If adding this entry exceeds Telegram's limit, send current text and start new one
+        if ((text + entry).length > 4000) {
+          await ctx.reply(text, { parse_mode: "HTML" });
+          text = "";
+        }
+        text += entry;
+      }
+      
+      if (text) {
         await ctx.reply(text, { parse_mode: "HTML", ...getProjectMenu(projectId) });
       }
     } catch (err) {
       console.error("Error in view_knowledge action:", err);
-      await ctx.reply("❌ حدث خطأ أثناء عرض المعرفة.");
+      await ctx.reply("❌ حدث خطأ أثناء عرض المعرفة. قد يكون هناك مشكلة في تنسيق البيانات.");
     }
   });
 
@@ -174,7 +186,6 @@ export function createBot() {
       const project = await getProjectById(projectId);
       if (!project) return ctx.reply("المشروع غير موجود.");
       
-      // FIX: Escape <token> to avoid HTML parsing error
       const text = `🔑 مفتاح API لمشروع <b>${escapeHtml(project.name)}</b>:\n\n` +
         `<code>${escapeHtml(project.api_token)}</code>\n\n` +
         `استخدمه في الـ Header:\n<code>Authorization: Bearer &lt;token&gt;</code>\n\n` +
